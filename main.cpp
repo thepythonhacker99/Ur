@@ -222,32 +222,51 @@ private:
 };
 
 struct TextureManager {
-    void assignTileTexture(const std::string &id, const std::string &path) {
-        if (id.size() != 1) {
-            std::cout << "Error in assignTileTexture: `id.size() != 1`\n";
-            return;
-        }
-
+    void assignBoardTexture(const std::string &path) {
         using namespace std::filesystem;
         if (!exists(path) || !is_regular_file(path)) {
             std::cout << "Error in assignTileTexture: " << path << ", file does not exists or is a folder\n";
             return;
         }
 
-        texture_paths[id[0]] = path;
+        m_texture_paths[TEX_ID_BOARD] = path;
     }
 
     void loadTextures() {
-        textures.clear();
+        m_textures.clear();
 
         using namespace std::filesystem;
-        for (auto &[id, pathString]: texture_paths) {
-            textures[id] = LoadTexture(pathString.c_str());
+        for (auto &[id, pathString]: m_texture_paths) {
+            m_textures[id] = LoadTexture(pathString.c_str());
         }
     }
 
-    std::map<char, std::string> texture_paths;
-    std::map<char, Texture2D> textures;
+    void setBoardTile(float x, float y, float w, float h) {
+        m_board_tile = {
+            .x = x, .y = y, .width = w, .height = h
+        };
+    }
+
+    Rectangle getTileRectangle(int x, int y) {
+        return Rectangle{
+            .x = m_board_tile.x + m_board_tile.width * x,
+            .y = m_board_tile.y + m_board_tile.height * y,
+            .width = m_board_tile.width,
+            .height = m_board_tile.height
+        };
+    }
+
+    const Texture2D& getBoardTexture() {
+        return m_textures[TEX_ID_BOARD];
+    }
+
+    static constexpr auto TEX_ID_BOARD = "board";
+
+private:
+    std::map<std::string, std::string> m_texture_paths;
+    std::map<std::string, Texture2D> m_textures;
+
+    Rectangle m_board_tile{0, 0, 0, 0};
 };
 
 int main() {
@@ -273,7 +292,8 @@ int main() {
         GameConfiguration_table["p2_end_y"] = &GameConfiguration::p2_end_y;
 
         sol::usertype TextureManager_table = lua.new_usertype<TextureManager>("TextureManager");
-        TextureManager_table["assignTileTexture"] = &TextureManager::assignTileTexture;
+        TextureManager_table["assignBoardTexture"] = &TextureManager::assignBoardTexture;
+        TextureManager_table["setBoardTile"] = &TextureManager::setBoardTile;
 
         sol::usertype EventManager_table = lua.new_usertype<EventManager>("EventManager");
         EventManager_table["send"] = &EventManager::sendEvent;
@@ -332,26 +352,30 @@ int main() {
     texture_manager.loadTextures();
 
     while (!raylib::Window::ShouldClose()) {
+        eventManager.processEvents();
+
         BeginDrawing();
         ClearBackground(RAYWHITE);
 
-        eventManager.processEvents();
+        const float scale = 0.4;
+
+        auto &tex = texture_manager.getBoardTexture();
+
+        Rectangle source = {
+            .x = 0, .y = 0, .width = static_cast<float>(tex.width), .height = static_cast<float>(tex.height)
+        };
+
+        Rectangle dest = {
+            .x = 0, .y = 0,
+            .width = source.width * scale, .height = source.height * scale
+        };
+
+        DrawTexturePro(tex, source, dest, {.x = 0, .y = 0}, 0, WHITE);
+
 
         for (int i = 0; i < game_configuration.rows; i++) {
             for (int j = 0; j < game_configuration.columns; j++) {
                 char id = game_configuration.schematic[i][j];
-                auto &tex = texture_manager.textures[id];
-
-                Rectangle source = {
-                    .x = 0, .y = 0, .width = static_cast<float>(tex.width), .height = static_cast<float>(tex.height)
-                };
-
-                float texSize = 100;
-
-                Rectangle dest = {
-                    .x = j * texSize, .y = i * texSize,
-                    .width = texSize, .height = texSize
-                };
 
                 auto c = WHITE;
                 if (i == game_configuration.p1_start_y && j == game_configuration.p1_start_x) c = RED;
@@ -359,7 +383,11 @@ int main() {
                 if (i == game_configuration.p1_end_y && j == game_configuration.p1_end_x) c = BLUE;
                 if (i == game_configuration.p2_end_y && j == game_configuration.p2_end_x) c = BLUE;
 
-                DrawTexturePro(tex, source, dest, {.x = 0, .y = 0}, 0, c);
+                c.a = 100;
+
+                Rectangle rect = texture_manager.getTileRectangle(j, i);
+
+                DrawRectangleLines(rect.x * scale, rect.y * scale, rect.width * scale, rect.height * scale, c);
             }
         }
 

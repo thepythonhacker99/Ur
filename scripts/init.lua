@@ -38,8 +38,8 @@ function initGameConfiguration(conf)
 end
 
 function assignTextures(res)
-	res:assignTileTexture('.', './textures/tile1.png')
-	res:assignTileTexture('#', './textures/tile2.png')
+	res:assignBoardTexture('./textures/board_bordered.png')
+	res:setBoardTile(107.5, 660.5, 412.25, 412.25)
 end
 
 function randomEvent(state, data, event)
