@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 4.3)
+cmake_minimum_required(VERSION 4.1.2)
 project(Ur)
 
 set(CMAKE_CXX_STANDARD 26)
@@ -41,9 +41,7 @@ FetchContent_MakeAvailable(sol2)
 find_package(Lua REQUIRED)
 
 add_executable(${PROJECT_NAME} main.cpp
-        json.hpp
-        lua_convert.hpp
-        lua_convert.cpp)
+)
 target_link_libraries(${PROJECT_NAME} PUBLIC raylib PUBLIC raylib_cpp)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE sol2 ${LUA_LIBRARIES})

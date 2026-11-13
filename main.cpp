@@ -1,10 +1,9 @@
+#include <atomic>
 #include <filesystem>
 #include <map>
 #include <queue>
 #include <utility>
 
-#include "json.hpp"
-#include "lua_convert.hpp"
 #include "raylib-cpp.hpp"
 #include "sol/sol.hpp"
 
@@ -24,6 +23,21 @@ struct GameConfiguration {
     int p2_end_y = -1;
 
     std::vector<std::vector<char>> schematic, circuit_p1, circuit_p2;
+
+    char getDirectionP1(int x, int y) const {
+        if (isCoordinateInBoard(x, y)) return circuit_p1[y][x];
+        return '.';
+    }
+
+    char getDirectionP2(int x, int y) const {
+        if (isCoordinateInBoard(x, y)) return circuit_p2[y][x];
+        return '.';
+    }
+
+    char getTileType(int x, int y) const {
+        if (isCoordinateInBoard(x, y)) return schematic[y][x];
+        return '-';
+    }
 
     void loadSchematic(const std::string &s) {
         schematic = loadBoard(s);
@@ -51,21 +65,24 @@ struct GameConfiguration {
         if (!isBoardValid(circuit_p2, rows, columns))
             return "circuit_p2 does not match the specified row and column sizes";
 
-        if (!isCoordinateInBoard(p1_start_x, p1_start_y, rows, columns))
+        if (!isCoordinateInBoard(p1_start_x, p1_start_y))
             return "p1_start is not valid";
 
-        if (!isCoordinateInBoard(p2_start_x, p2_start_y, rows, columns))
+        if (!isCoordinateInBoard(p2_start_x, p2_start_y))
             return "p2_start is not valid";
 
-        if (!isCoordinateInBoard(p1_end_x, p1_end_y, rows, columns))
+        if (!isCoordinateInBoard(p1_end_x, p1_end_y))
             return "p1_end is not valid";
 
-        if (!isCoordinateInBoard(p2_end_x, p2_end_y, rows, columns))
+        if (!isCoordinateInBoard(p2_end_x, p2_end_y))
             return "p2_end is not valid";
 
         return std::nullopt;
     }
 
+    bool isCoordinateInBoard(int x, int y) const {
+        return x >= 0 && y >= 0 && x < columns && y < rows;
+    }
 private:
     static std::vector<std::vector<char>> loadBoard(const std::string &s) {
         std::vector<std::vector<char>> board;
@@ -97,10 +114,6 @@ private:
                               }
                );
     }
-
-    static bool isCoordinateInBoard(int x, int y, int rows, int cols) {
-        return x >= 0 && y >= 0 && x < cols && y < rows;
-    }
 };
 
 
@@ -108,7 +121,7 @@ using TileState = std::pair<int, int>;
 
 class GameState {
 public:
-    GameState(GameConfiguration conf, bool myTurn) : m_configuration(std::move(conf)) {
+    GameState(GameConfiguration conf) : m_configuration(std::move(conf)) {
         m_pebbles.resize(m_configuration.rows, std::vector<TileState>(m_configuration.columns, {0, 0}));
         m_pebbles[m_configuration.p1_start_y][m_configuration.p1_start_x].first = m_configuration.pebble;
         m_pebbles[m_configuration.p2_start_y][m_configuration.p2_start_x].second = m_configuration.pebble;
@@ -116,6 +129,10 @@ public:
 
     TileState& getTileState(int x, int y) {
         return m_pebbles[y][x];
+    }
+
+    const GameConfiguration& getConfiguration() {
+        return m_configuration;
     }
 
     int getP1Start() {
@@ -134,6 +151,24 @@ public:
         return getTileState(m_configuration.p2_end_x, m_configuration.p2_end_y).second;
     }
 
+    void movePebbleP1(int x1, int y1, int x2, int y2) {
+        if (!m_configuration.isCoordinateInBoard(x1, y1) || !m_configuration.isCoordinateInBoard(x2, y2)) return;
+        auto& pebbles = getTileState(x1, y1).first;
+        if (pebbles > 0) {
+            pebbles--;
+            getTileState(x2, y2).first++;
+        }
+    }
+
+    void movePebbleP2(int x1, int y1, int x2, int y2) {
+        if (!m_configuration.isCoordinateInBoard(x1, y1) || !m_configuration.isCoordinateInBoard(x2, y2)) return;
+        auto& pebbles = getTileState(x1, y1).second;
+        if (pebbles > 0) {
+            pebbles--;
+            getTileState(x2, y2).second++;
+        }
+    }
+
 private:
     const GameConfiguration m_configuration;
 
@@ -146,29 +181,27 @@ public:
 
     }
 
-    void sendEvent(const std::string& eventType, const sol::table& data, bool broadcast) {
+    void sendEvent(const std::string& eventType, sol::table data, bool broadcast) {
         std::lock_guard eventQueueGuard(m_eventQueueMutex);
 
         bool isProcessing = m_processing;
         if (!isProcessing) m_luaMutex->lock();
 
-        nlohmann::json json = tableToJson(data);
-        json["type"] = eventType;
+        data["type"] = eventType;
 
         if (broadcast) {
             // send it through the socket with json.dump()
         }
 
-        m_eventQueue.push(std::move(json));
-
+        m_eventQueue.push(data);
         if (!isProcessing) m_luaMutex->unlock();
     }
 
     // Must be called in main thread
     void processEvents() {
         m_eventQueueMutex.lock();
-        std::queue<nlohmann::json> tempQueue = std::move(m_eventQueue);
-        m_eventQueue = std::queue<nlohmann::json>();
+        std::queue<sol::table> tempQueue = std::move(m_eventQueue);
+        m_eventQueue = std::queue<sol::table>();
         m_eventQueueMutex.unlock();
 
         std::lock_guard luaGuard(*m_luaMutex);
@@ -177,28 +210,21 @@ public:
         while (!tempQueue.empty()) {
             auto& e = tempQueue.front();
 
-            bool hasEventType = e.contains("type");
-            if (!hasEventType) {
+            std::string eventType = e.get_or("type", std::string{});
+            if (eventType.empty()) {
                 std::cout << "event with no event type!\n";
                 return;
             }
 
-            std::string eventType = e["type"];
-
             sol::object callbackObject = m_lua->operator[](eventType + "Event");
             if (callbackObject.is<sol::protected_function>()) {
-                std::cout << "Calling callback for " << eventType << "\n";
+                // std::cout << "Calling callback for " << eventType << "\n";
                 sol::protected_function eventFunction = callbackObject;
 
-                sol::table dataTable = jsonToTable(*m_lua, e);
-                if (dataTable["invalid"].get<bool>() == true) {
-                    std::cout << "Got invalid json as callback data\n";
-                } else {
-                    auto result = eventFunction(*m_gameState, dataTable, *this);
-                    if (!result.valid()) {
-                        sol::error err = result;
-                        std::cout << "Error in callback (" << eventType << "): " << err.what() << "\n";
-                    }
+                auto result = eventFunction(*m_gameState, e, *this);
+                if (!result.valid()) {
+                    sol::error err = result;
+                    std::cout << "Error in callback (" << eventType << "): " << err.what() << "\n";
                 }
             } else {
                 std::cout << "Event with type " << eventType << " has no lua callback!\n";
@@ -216,7 +242,7 @@ private:
 
     std::atomic<bool> m_processing = false;
     std::mutex m_eventQueueMutex;
-    std::queue<nlohmann::json> m_eventQueue;
+    std::queue<sol::table> m_eventQueue;
 
     GameState* m_gameState;
 };
@@ -290,6 +316,9 @@ int main() {
         GameConfiguration_table["p2_start_y"] = &GameConfiguration::p2_start_y;
         GameConfiguration_table["p2_end_x"] = &GameConfiguration::p2_end_x;
         GameConfiguration_table["p2_end_y"] = &GameConfiguration::p2_end_y;
+        GameConfiguration_table["getTileType"] = &GameConfiguration::getTileType;
+        GameConfiguration_table["getDirectionP1"] = &GameConfiguration::getDirectionP1;
+        GameConfiguration_table["getDirectionP2"] = &GameConfiguration::getDirectionP2;
 
         sol::usertype TextureManager_table = lua.new_usertype<TextureManager>("TextureManager");
         TextureManager_table["assignBoardTexture"] = &TextureManager::assignBoardTexture;
@@ -300,6 +329,9 @@ int main() {
 
         sol::usertype GameState_table = lua.new_usertype<GameState>("GameState");
         GameState_table["getTileState"] = &GameState::getTileState;
+        GameState_table["getConfiguration"] = &GameState::getConfiguration;
+        GameState_table["movePebbleP1"] = &GameState::movePebbleP1;
+        GameState_table["movePebbleP2"] = &GameState::movePebbleP2;
     }
 
     {
@@ -343,40 +375,49 @@ int main() {
         std::cout << "lua_assignTextures success!\n";
     }
 
-    GameState gameState(game_configuration, true);
-    EventManager eventManager(&lua, &luaMutex, &gameState);
+    GameState game_state(game_configuration);
+    EventManager eventManager(&lua, &luaMutex, &game_state);
 
     raylib::Window window(1280, 720, "Ur", FLAG_VSYNC_HINT | FLAG_WINDOW_RESIZABLE);
 
     std::cout << "Loading textures\n";
     texture_manager.loadTextures();
 
+    Camera2D camera;
+    camera.offset = {GetScreenWidth() / 2.f, GetScreenHeight() / 2.f};
+    camera.target = {0, 0};
+    camera.rotation = 0;
+    camera.zoom = 0.5;
+
     while (!raylib::Window::ShouldClose()) {
         eventManager.processEvents();
 
-        BeginDrawing();
-        ClearBackground(RAYWHITE);
-
-        const float scale = 0.4;
-
         auto &tex = texture_manager.getBoardTexture();
-
         Rectangle source = {
             .x = 0, .y = 0, .width = static_cast<float>(tex.width), .height = static_cast<float>(tex.height)
         };
 
         Rectangle dest = {
             .x = 0, .y = 0,
-            .width = source.width * scale, .height = source.height * scale
+            .width = source.width, .height = source.height
         };
+
+        BeginDrawing();
+        ClearBackground(RAYWHITE);
+
+        camera.offset = {GetScreenWidth() / 2.f, GetScreenHeight() / 2.f};
+        camera.target = {
+            dest.x + dest.width / 2,
+            dest.y + dest.height / 2
+        };
+
+        camera.zoom *= 1. + GetMouseWheelMove() * 0.1;
+        BeginMode2D(camera);
 
         DrawTexturePro(tex, source, dest, {.x = 0, .y = 0}, 0, WHITE);
 
-
         for (int i = 0; i < game_configuration.rows; i++) {
             for (int j = 0; j < game_configuration.columns; j++) {
-                char id = game_configuration.schematic[i][j];
-
                 auto c = WHITE;
                 if (i == game_configuration.p1_start_y && j == game_configuration.p1_start_x) c = RED;
                 if (i == game_configuration.p2_start_y && j == game_configuration.p2_start_x) c = RED;
@@ -385,20 +426,54 @@ int main() {
 
                 c.a = 100;
 
-                Rectangle rect = texture_manager.getTileRectangle(j, i);
+                Rectangle tileRect = texture_manager.getTileRectangle(j, i);
+                DrawRectangleLines(tileRect.x, tileRect.y, tileRect.width, tileRect.height, c);
 
-                DrawRectangleLines(rect.x * scale, rect.y * scale, rect.width * scale, rect.height * scale, c);
+                char id = game_configuration.schematic[i][j];
+                char p1_dir = game_configuration.circuit_p1[i][j];
+                char p2_dir = game_configuration.circuit_p2[i][j];
+                auto [p1_pebbles, p2_pebbles] = game_state.getTileState(j, i);
+
+                std::string info = std::format("{} {}\n{} {}", p1_dir, p2_dir, p1_pebbles, p2_pebbles);
+
+                DrawText(
+                    info.c_str(),
+                    tileRect.x + tileRect.width / 2 - MeasureText(info.c_str(), 60) / 2,
+                    tileRect.y + tileRect.height / 2 - 60,
+                    60,
+                    WHITE
+                );
             }
         }
 
-        if (IsKeyPressed(KEY_SPACE)) {
-            eventManager.sendEvent(
-                "random",
-                lua.create_table(),
-                false
-            );
-        }
-
         EndDrawing();
+
+        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+            auto mousePos = GetMousePosition();
+            auto world = GetScreenToWorld2D(mousePos, camera);
+
+            Rectangle boardRectangle = texture_manager.getTileRectangle(0, 0);
+
+            Vector2 relativeToStart = {
+                world.x - boardRectangle.x,
+                world.y - boardRectangle.y
+            };
+
+            int tileX = relativeToStart.x / boardRectangle.width;
+            int tileY = relativeToStart.y / boardRectangle.height;
+
+            if (tileX >= 0 && tileX < game_configuration.columns && tileY >= 0 && tileY < game_configuration.rows) {
+                std::cout << "Tile click: " << tileX << ", " << tileY << "\n";
+
+                eventManager.sendEvent(
+                    "tileClicked",
+                    lua.create_table_with(
+                        "tileX", tileX,
+                        "tileY", tileY
+                    ),
+                    false
+                );
+            }
+        }
     }
 }

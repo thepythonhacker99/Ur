@@ -21,15 +21,15 @@ function initGameConfiguration(conf)
 	]]
 
 	local circuit_p1 = [[
-		SEEEE#EE
-		WWWWWWWN
+		SWWWW#WW
+		EEEEEEEN
 		........
 	]]
 
 	local circuit_p2 = [[
 		........
-		WWWWWWWS
-		NEEEE#EE
+		EEEEEEES
+		NWWWW#WW
 	]]
 
 	conf:loadSchematic(schematic)
@@ -38,22 +38,47 @@ function initGameConfiguration(conf)
 end
 
 function assignTextures(res)
-	res:assignBoardTexture('./textures/board_bordered.png')
+	res:assignBoardTexture('./textures/board.png')
 	res:setBoardTile(107.5, 660.5, 412.25, 412.25)
 end
 
-function randomEvent(state, data, event)
-	print("Random event from lua!")
-
-	local newData = {
-		skibidi = "yes"
-	}
-
-	event:send("notRandom", newData, false)
+function isValidDirection(s)
+	return s == "S" or s == "W" or s == "E" or s == "N"
 end
 
-function notRandomEvent(state, data, event)
-	print("Not random event in lua!")
+function translatePositionByDirection(x, y, dir)
+	if dir == "S" then
+		y = y + 1
+	end
+	if dir == "N" then
+		y = y - 1
+	end
+	if dir == "W" then
+		x = x - 1
+	end
+	if dir == "E" then
+		x = x + 1
+	end
+	return x, y
+end
 
-	print("skibidi?!?!?! " .. data.skibidi)
+function tileClickedEvent(state, data, event)
+	print("Tile clicked from lua: " .. data.tileX .. ", " .. data.tileY)
+	local p1_pebbles, p2_pebbles = state:getTileState(data.tileX, data.tileY)
+	print("Pebbles: " .. p1_pebbles .. " " .. p2_pebbles)
+	local conf = state:getConfiguration();
+	local p1_dir = conf:getDirectionP1(data.tileX, data.tileY)
+	local p2_dir = conf:getDirectionP2(data.tileX, data.tileY)
+	print("p1_dir " .. p1_dir)
+	print("p2_dir " .. p2_dir)
+
+	if isValidDirection(p1_dir) then
+		local newX, newY = translatePositionByDirection(data.tileX, data.tileY, p1_dir)
+		state:movePebbleP1(data.tileX, data.tileY, newX, newY)
+	end
+
+	if isValidDirection(p2_dir) then
+		local newX, newY = translatePositionByDirection(data.tileX, data.tileY, p2_dir)
+		state:movePebbleP2(data.tileX, data.tileY, newX, newY)
+	end
 end
